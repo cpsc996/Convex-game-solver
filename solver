@@ -1,0 +1,279 @@
+%%solver starts
+function [x ,v] = solver1(H, f, A, b, C, d, target)
+global self_A self_b self_W self_num_eq self_num_ineq self_num_prime self_C...
+    self_q self_d self_D2 self_step self_eq_constraint self_residual...
+    self_mu precision new_decompostion L_cache U_cache P_cache self_D_solve;
+H=H./(max(abs(f))+1);
+f=f./(max(abs(f))+1);
+A=A./(abs(b)+1);
+b=b./(abs(b)+1);
+C=C./(abs(d)+1);
+d=d./(abs(d)+1);
+self_W = H;
+self_q = f;
+self_A= A;
+self_b = b;
+self_C = C;
+self_d = d;
+precision = target;
+new_decompostion= true;
+
+self_num_ineq = size(self_A, 1);
+self_num_prime = size(self_A, 2);
+self_num_eq = size(self_C, 1);
+self_eq_constraint= (self_num_eq~=0);
+
+self_e = ones(self_num_ineq, 1);
+
+self_residual=[];
+self_mu=[];
+self_v=[];
+self_cond=[];
+self_step=[];
+
+v = -1*self_e;
+r = 1;
+%r become a scaler
+
+dinf_bound = 0.99;
+
+for iter_cnt = 1:40000% Changeble!
+    [success, alpha_max] = line_search(1, v, dinf_bound);
+    if success
+        %alphamax = [alphamax, alpha_max];
+        r = 1 * 1.0/abs(alpha_max);
+    else
+        iter_cnt
+        alpha_max;
+        "line search failed"
+    end
+
+    [v, x, y] = Newton(r, v, 1, 1e10);
+        
+    if self_eq_constraint   
+            residual=norm([(self_W * x + self_q -r.*self_A'*exp(v) - self_C'*y); (self_A*x+self_b-r*exp(-v)); (self_C*x+self_d)]);
+    else  
+            residual=norm([(self_W * x + self_q -r.*self_A'*exp(v)); (self_A*x+self_b-r*exp(-v))]);
+    end
+
+    %appending
+    self_residual = [self_residual, residual];
+    self_mu = [self_mu, r*r];
+                  
+    dinf = norm(d, Inf);
+    
+    mu= r*r;
+
+    if dinf <= 1.0 && mu < precision  %%Change here for precision
+         [v, x, y] = Newton(r, v, 5, 1e10);
+         if self_eq_constraint   
+            residual=norm([(self_W * x + self_q -r.*self_A'*exp(v) - self_C'*y); (self_A*x+self_b-r*exp(-v)); (self_C*x+self_d)]);
+        else  
+            residual=norm([(self_W * x + self_q -r.*self_A'*exp(v)); (self_A*x+self_b-r*exp(-v))]);
+        end
+        self_residual = [self_residual, residual];
+        self_mu = [self_mu, r*r];
+
+        figure;
+        semilogy(self_residual,'LineWidth',5)
+        xlabel("Iterate")
+        ylabel("Residual")              
+        %savetxt('mu', self_mu, fmt='%.2e')
+        % hold on;
+        yyaxis right
+        semilogy(self_mu,'LineWidth',5)
+        %xlabel("Iterate")
+        ylabel("\mu")
+        legend("Residual","\mu")
+        fontsize(gcf,40,"points")
+        return
+    end
+end
+end
+       
+
+
+
+function [v, x, y] = Newton(r, v0, iters, eps)
+        global self_step new_decompostion
+        v = v0;
+        for i = 1: iters
+            [d, x, stepsize, y] = newton_dir(r, v, new_decompostion);
+            
+            v = v + d * stepsize;
+             new_decompostion = true;
+            if (norm(d) < 1e-3)
+                
+                break
+            end
+            stepsize
+            self_step =[self_step, stepsize];
+        end
+
+        if (norm(d) > eps)
+            "FAIL"
+            print(norm(d))
+            raise
+        end
+      
+end
+
+function [dcheck, x, stepsize, y] = newton_dir(r, v, new_decompostion)
+global self_v_cached self_eq_constraint L_cache U_cache P_cache self_D_solve;
+global D;
+global self_A self_b self_W self_C self_D2 self_q self_d self_num_ineq self_num_eq  self_num_prime;
+        if (isempty(self_v_cached)|| norm(self_v_cached - v) > 0)
+            self_v_cached = v;
+            D = 0 * (v * v');
+            self_D2 = 0 * (v * v');
+            expv = 0 * v;
+            for i = 1: self_num_ineq
+                D(i, i) = exp(v(i));
+                self_D2(i, i) = exp(2*v(i));
+                expv(i) = exp(v(i));
+            end
+
+            self_D_solve = D;
+        end
+           
+        if self_eq_constraint
+            
+            if new_decompostion
+          
+                w1=[self_W+self_A'*self_D2*self_A, -self_C'];
+        
+                w2=[self_C, -1e-10*diag(ones(self_num_eq,1))];
+               
+                G = sparse([w1; w2]);
+                
+                [L,U,P] = lu(G);
+                
+                L_cache = L;
+                U_cache = U;
+                P_cache = P;
+                
+                Y = sparse(-[self_q- r*self_A'*exp(v)+self_A'*self_D2*(self_b-r*exp(-v)); self_d]);
+                
+                Y= P*Y;
+                
+                solution1 = L\Y;
+                solution = U\solution1;
+                
+                x = solution(1:self_num_prime);
+    
+                y=solution(self_num_prime +1: end);
+                
+                dcheck = (-self_D_solve*(self_b-r*exp(-v))-self_D_solve*self_A*x)/r;
+                
+                beta = 0.7;
+                norminf = norm(dcheck, Inf);
+                stepsize = 1.0/max(1.0, 1.0/(2*beta) * norminf^2);
+                %s=self_A * x + self_b;
+            else
+                
+                Y = sparse(-[self_q- r*self_A'*exp(v)+self_A'*self_D2*(self_b-r*exp(-v)); self_d]);
+                
+                Y= P_cache*Y;
+                U=U_cache;
+                solution1 = L_cache\Y;
+                solution = U\solution1;
+
+                x = solution(1:self_num_prime);
+    
+                y=solution(self_num_prime+1 : end);
+                
+                dcheck = (-self_D_solve*(self_b-r*exp(-v))-self_D_solve*self_A*x)/r;
+
+                beta = 0.7;
+                norminf = norm(dcheck, Inf);
+                stepsize = 1.0/max(1.0, 1.0/(2*beta) * norminf^2);
+            end
+                
+        else
+            if  new_decompostion
+                
+                G = sparse(self_W+self_A'*self_D2*self_A);
+                    
+                [L,U,P] = lu(G);
+                
+                L_cache = L;
+                U_cache = U;
+                P_cache = P;
+                    
+                Y=sparse(-(self_q-r * self_A' * exp(v) + self_A'*self_D2*(self_b-r * exp(-v))));
+                Y=P*Y;
+
+                solution1 = L\Y;
+                solution = U\solution1;
+   
+                x = solution(1:self_num_prime);
+    
+                y=[];
+        
+                dcheck = (-self_D_solve*(self_b-r*exp(-v))-self_D_solve*self_A*x)/r;
+        
+                beta = 0.7;
+                norminf = norm(dcheck, Inf);
+                stepsize = 1.0/max(1.0, 1.0/(2*beta) * norminf^2);
+                %s=self_A * x + self_b;
+            else
+                Y=sparse(-(self_q-r * self_A' * exp(v) + self_A'*self_D2*(self_b-r * exp(-v))));
+                
+                Y =P_cache*Y;
+                U=U_cache;
+                solution1 = L_cache\Y;
+                solution = U\solution1;
+                
+                x = solution(1:self_num_prime);
+    
+                y=[];
+        
+                dcheck = (-self_D_solve*(self_b-r*exp(-v))-self_D_solve*self_A*x)/r;
+                
+                beta = 0.7;
+                norminf = norm(dcheck, Inf);
+                stepsize = 1.0/max(1.0, 1.0/(2*beta) * norminf^2);
+                %s=self_A * x + self_b;
+            end
+        end
+end
+
+
+
+function [success, max_alpha] = line_search(r, v, dinf_bound)
+        global self_num_ineq new_decompostion;
+        
+        d2_ = newton_dir(r*1e2, v, new_decompostion); %already means to pick up the first one, which is d.
+        new_decompostion = false;
+        d1_=newton_dir(r, v, new_decompostion);
+
+        d0= -(1/(1e2-1))*d1_+(1+1/(1e2-1))*d2_;
+        d1=(1e2*r)/(1e2-1)*(d1_-d2_);
+      
+        min_alpha = 0;
+        max_alpha = 1e10;
+        for i = 1:self_num_ineq
+            temp_min = (dinf_bound-d0(i)) / d1(i);
+            temp_max = (-dinf_bound-d0(i)) / d1(i);
+            
+            if d1(i) > 0
+                temp = temp_max;
+                temp_max = temp_min;
+                temp_min = temp;
+            end
+
+            if temp_max<temp_min
+                raise
+            end
+
+            if temp_min > min_alpha
+                min_alpha = temp_min;
+            end
+            
+            if temp_max < max_alpha
+                max_alpha = temp_max;
+            end
+        
+        end
+        success = min_alpha < max_alpha;
+end
